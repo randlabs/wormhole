@@ -1,16 +1,20 @@
 import {
   ChainId,
+  CHAIN_ID_ACALA,
+  CHAIN_ID_ALGORAND,
   CHAIN_ID_AURORA,
   CHAIN_ID_AVAX,
   CHAIN_ID_BSC,
   CHAIN_ID_ETH,
   CHAIN_ID_ETHEREUM_ROPSTEN,
   CHAIN_ID_FANTOM,
+  CHAIN_ID_KARURA,
   CHAIN_ID_OASIS,
   CHAIN_ID_POLYGON,
   CHAIN_ID_SOLANA,
   CHAIN_ID_TERRA,
   isEVMChain,
+  TokenImplementation__factory,
   WSOL_ADDRESS,
   WSOL_DECIMALS,
 } from "@certusone/wormhole-sdk";
@@ -22,20 +26,25 @@ import {
   ParsedAccountData,
   PublicKey,
 } from "@solana/web3.js";
+import { Algodv2 } from "algosdk";
 import axios from "axios";
 import { ethers } from "ethers";
 import { formatUnits } from "ethers/lib/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
+import { useAlgorandContext } from "../contexts/AlgorandWalletContext";
 import {
   Provider,
   useEthereumProvider,
 } from "../contexts/EthereumProviderContext";
 import { useSolanaWallet } from "../contexts/SolanaWalletContext";
+import acalaIcon from "../icons/acala.svg";
+import auroraIcon from "../icons/aurora.svg";
 import avaxIcon from "../icons/avax.svg";
 import bnbIcon from "../icons/bnb.svg";
 import ethIcon from "../icons/eth.svg";
 import fantomIcon from "../icons/fantom.svg";
+import karuraIcon from "../icons/karura.svg";
 import oasisIcon from "../icons/oasis-network-rose-logo.svg";
 import polygonIcon from "../icons/polygon.svg";
 import {
@@ -66,7 +75,12 @@ import {
   setSourceWalletAddress,
 } from "../store/transferSlice";
 import {
+  ACA_ADDRESS,
+  ACA_DECIMALS,
+  ALGORAND_HOST,
   COVALENT_GET_TOKENS_URL,
+  KAR_ADDRESS,
+  KAR_DECIMALS,
   logoOverrides,
   ROPSTEN_WETH_ADDRESS,
   ROPSTEN_WETH_DECIMALS,
@@ -91,6 +105,7 @@ import {
   extractMintInfo,
   getMultipleAccountsRPC,
 } from "../utils/solana";
+import { fetchSingleMetadata } from "./useAlgoMetadata";
 
 export function createParsedTokenAccount(
   publicKey: string,
@@ -368,7 +383,7 @@ const createNativeAuroraParsedTokenAccount = (
           balanceInEth.toString(), //This is the actual display field, which has full precision.
           "ETH", //A white lie for display purposes
           "Aurora ETH", //A white lie for display purposes
-          fantomIcon,
+          auroraIcon,
           true //isNativeAsset
         );
       });
@@ -395,6 +410,56 @@ const createNativeFantomParsedTokenAccount = (
           true //isNativeAsset
         );
       });
+};
+
+const createNativeKaruraParsedTokenAccount = (
+  provider: Provider,
+  signerAddress: string | undefined
+) => {
+  return !(provider && signerAddress)
+    ? Promise.reject()
+    : TokenImplementation__factory.connect(KAR_ADDRESS, provider)
+        .balanceOf(signerAddress)
+        .then((balance) => {
+          const balanceInEth = ethers.utils.formatUnits(balance, KAR_DECIMALS);
+          return createParsedTokenAccount(
+            signerAddress, //public key
+            KAR_ADDRESS, //Mint key, On the other side this will be wavax, so this is hopefully a white lie.
+            balance.toString(), //amount, in wei
+            KAR_DECIMALS,
+            parseFloat(balanceInEth), //This loses precision, but is a limitation of the current datamodel. This field is essentially deprecated
+            balanceInEth.toString(), //This is the actual display field, which has full precision.
+            "KAR", //A white lie for display purposes
+            "KAR", //A white lie for display purposes
+            karuraIcon,
+            false //isNativeAsset
+          );
+        });
+};
+
+const createNativeAcalaParsedTokenAccount = (
+  provider: Provider,
+  signerAddress: string | undefined
+) => {
+  return !(provider && signerAddress)
+    ? Promise.reject()
+    : TokenImplementation__factory.connect(ACA_ADDRESS, provider)
+        .balanceOf(signerAddress)
+        .then((balance) => {
+          const balanceInEth = ethers.utils.formatUnits(balance, ACA_DECIMALS);
+          return createParsedTokenAccount(
+            signerAddress, //public key
+            ACA_ADDRESS, //Mint key, On the other side this will be wavax, so this is hopefully a white lie.
+            balance.toString(), //amount, in wei
+            ACA_DECIMALS,
+            parseFloat(balanceInEth), //This loses precision, but is a limitation of the current datamodel. This field is essentially deprecated
+            balanceInEth.toString(), //This is the actual display field, which has full precision.
+            "ACA", //A white lie for display purposes
+            "ACA", //A white lie for display purposes
+            acalaIcon,
+            false //isNativeAsset
+          );
+        });
 };
 
 const createNFTParsedTokenAccountFromCovalent = (
@@ -547,6 +612,72 @@ const getSolanaParsedTokenAccounts = async (
   }
 };
 
+const getAlgorandParsedTokenAccounts = async (
+  walletAddress: string,
+  dispatch: Dispatch,
+  nft: boolean
+) => {
+  if (nft) {
+    // not supported yet
+    return;
+  }
+  dispatch(
+    nft ? fetchSourceParsedTokenAccountsNFT() : fetchSourceParsedTokenAccounts()
+  );
+  try {
+    const algodClient = new Algodv2(
+      ALGORAND_HOST.algodToken,
+      ALGORAND_HOST.algodServer,
+      ALGORAND_HOST.algodPort
+    );
+    const accountInfo = await algodClient
+      .accountInformation(walletAddress)
+      .do();
+    const parsedTokenAccounts: ParsedTokenAccount[] = [];
+    parsedTokenAccounts.push(
+      createParsedTokenAccount(
+        walletAddress, //publicKey
+        "0", //asset ID
+        accountInfo.amount, //amount
+        6, //decimals, 6 for microAlgo
+        parseFloat(formatUnits(accountInfo.amount, 6)),
+        formatUnits(accountInfo.amount, 6).toString(),
+        "ALGO",
+        "Algo",
+        undefined, //TODO logo
+        true
+      )
+    );
+    for (const asset of accountInfo.assets) {
+      const assetId = asset["asset-id"];
+      const amount = asset.amount;
+      const metadata = await fetchSingleMetadata(assetId, algodClient);
+      parsedTokenAccounts.push(
+        createParsedTokenAccount(
+          walletAddress,
+          assetId.toString(),
+          amount,
+          metadata.decimals,
+          parseFloat(formatUnits(amount, metadata.decimals)),
+          formatUnits(amount, metadata.decimals).toString(),
+          metadata.symbol,
+          metadata.tokenName,
+          undefined,
+          false
+        )
+      );
+    }
+    dispatch(receiveSourceParsedTokenAccounts(parsedTokenAccounts));
+  } catch (e) {
+    console.error(e);
+    dispatch(
+      nft
+        ? errorSourceParsedTokenAccountsNFT("Failed to load NFT metadata")
+        : errorSourceParsedTokenAccounts("Failed to load token metadata.")
+    );
+  }
+};
+
 /**
  * Fetches the balance of an asset for the connected wallet
  * This should handle every type of chain in the future, but only reads the Transfer state.
@@ -566,6 +697,7 @@ function useGetAvailableTokens(nft: boolean = false) {
   const solanaWallet = useSolanaWallet();
   const solPK = solanaWallet?.publicKey;
   const { provider, signerAddress } = useEthereumProvider();
+  const { accounts: algoAccounts } = useAlgorandContext();
 
   const [covalent, setCovalent] = useState<any>(undefined);
   const [covalentLoading, setCovalentLoading] = useState(false);
@@ -595,6 +727,8 @@ function useGetAvailableTokens(nft: boolean = false) {
     ? signerAddress
     : lookupChain === CHAIN_ID_SOLANA
     ? solPK?.toString()
+    : lookupChain === CHAIN_ID_ALGORAND
+    ? algoAccounts[0]?.address
     : undefined;
 
   const resetSourceAccounts = useCallback(() => {
@@ -978,6 +1112,72 @@ function useGetAvailableTokens(nft: boolean = false) {
     };
   }, [lookupChain, provider, signerAddress, nft, ethNativeAccount]);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (
+      signerAddress &&
+      lookupChain === CHAIN_ID_KARURA &&
+      !ethNativeAccount &&
+      !nft
+    ) {
+      setEthNativeAccountLoading(true);
+      createNativeKaruraParsedTokenAccount(provider, signerAddress).then(
+        (result) => {
+          console.log("create native account returned with value", result);
+          if (!cancelled) {
+            setEthNativeAccount(result);
+            setEthNativeAccountLoading(false);
+            setEthNativeAccountError("");
+          }
+        },
+        (error) => {
+          if (!cancelled) {
+            setEthNativeAccount(undefined);
+            setEthNativeAccountLoading(false);
+            setEthNativeAccountError("Unable to retrieve your Karura balance.");
+          }
+        }
+      );
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [lookupChain, provider, signerAddress, nft, ethNativeAccount]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (
+      signerAddress &&
+      lookupChain === CHAIN_ID_ACALA &&
+      !ethNativeAccount &&
+      !nft
+    ) {
+      setEthNativeAccountLoading(true);
+      createNativeAcalaParsedTokenAccount(provider, signerAddress).then(
+        (result) => {
+          console.log("create native account returned with value", result);
+          if (!cancelled) {
+            setEthNativeAccount(result);
+            setEthNativeAccountLoading(false);
+            setEthNativeAccountError("");
+          }
+        },
+        (error) => {
+          if (!cancelled) {
+            setEthNativeAccount(undefined);
+            setEthNativeAccountLoading(false);
+            setEthNativeAccountError("Unable to retrieve your Acala balance.");
+          }
+        }
+      );
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [lookupChain, provider, signerAddress, nft, ethNativeAccount]);
+
   //Ethereum covalent accounts load
   useEffect(() => {
     //const testWallet = "0xf60c2ea62edbfe808163751dd0d8693dcb30019c";
@@ -1053,6 +1253,22 @@ function useGetAvailableTokens(nft: boolean = false) {
   //Terra accounts load
   //At present, we don't have any mechanism for doing this.
   useEffect(() => {}, []);
+  //Algorand accounts load
+  useEffect(() => {
+    if (lookupChain === CHAIN_ID_ALGORAND && currentSourceWalletAddress) {
+      if (
+        !(tokenAccounts.data || tokenAccounts.isFetching || tokenAccounts.error)
+      ) {
+        getAlgorandParsedTokenAccounts(
+          currentSourceWalletAddress,
+          dispatch,
+          nft
+        );
+      }
+    }
+
+    return () => {};
+  }, [dispatch, lookupChain, currentSourceWalletAddress, tokenAccounts, nft]);
 
   const ethAccounts = useMemo(() => {
     const output = { ...tokenAccounts };
@@ -1070,7 +1286,7 @@ function useGetAvailableTokens(nft: boolean = false) {
 
   return lookupChain === CHAIN_ID_SOLANA
     ? {
-        tokenAccounts: tokenAccounts,
+        tokenAccounts,
         mintAccounts: {
           data: solanaMintAccounts,
           isFetching: solanaMintAccountsLoading,
@@ -1092,6 +1308,11 @@ function useGetAvailableTokens(nft: boolean = false) {
       }
     : lookupChain === CHAIN_ID_TERRA
     ? {
+        resetAccounts: resetSourceAccounts,
+      }
+    : lookupChain === CHAIN_ID_ALGORAND
+    ? {
+        tokenAccounts,
         resetAccounts: resetSourceAccounts,
       }
     : undefined;

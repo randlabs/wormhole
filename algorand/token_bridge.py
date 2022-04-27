@@ -15,7 +15,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 """
-
 from typing import List, Tuple, Dict, Any, Optional, Union
 
 from pyteal.ast import *
@@ -28,7 +27,6 @@ from inlineasm import *
 from algosdk.v2client.algod import AlgodClient
 
 from TmplSig import TmplSig
-
 from local_blob import LocalBlob
 
 import pprint
@@ -43,7 +41,7 @@ max_bytes = max_bytes_per_key * max_keys
 max_bits = bits_per_byte * max_bytes
 
 def fullyCompileContract(genTeal, client: AlgodClient, contract: Expr, name) -> bytes:
-    teal = compileTeal(contract, mode=Mode.Application, version=6, assembleConstants=True)
+    teal = compileTeal(contract, mode=Mode.Application, version=6, assembleConstants=True, optimize=OptimizeOptions(scratch_slots=True))
 
     if genTeal:
         with open(name, "w") as f:
@@ -60,33 +58,52 @@ def fullyCompileContract(genTeal, client: AlgodClient, contract: Expr, name) -> 
 def clear_token_bridge():
     return Int(1)
 
-def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
+def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig, devMode: bool):
     blob = LocalBlob()
     tidx = ScratchVar()
     mfee = ScratchVar()
 
+    def MagicAssert(a) -> Expr:
+        if devMode:
+            from inspect import currentframe
+            return Assert(And(a, Int(currentframe().f_back.f_lineno)))
+        else:
+            return Assert(a)
+
     @Subroutine(TealType.uint64)
     def governanceSet() -> Expr:
         maybe = App.globalGetEx(App.globalGet(Bytes("coreid")), Bytes("currentGuardianSetIndex"))
-        return Seq(maybe, Assert(maybe.hasValue()), maybe.value())
+        return Seq(maybe, MagicAssert(maybe.hasValue()), maybe.value())
 
     @Subroutine(TealType.uint64)
     def getMessageFee() -> Expr:
         maybe = App.globalGetEx(App.globalGet(Bytes("coreid")), Bytes("MessageFee"))
-        return Seq(maybe, Assert(maybe.hasValue()), maybe.value())
+        return Seq(maybe, MagicAssert(maybe.hasValue()), maybe.value())
+
+    @Subroutine(TealType.bytes)
+    def getNextAddress() -> Expr:
+        maybe = AppParam.address(Gtxn[Txn.group_index() + Int(1)].application_id())
+        return Seq(maybe, MagicAssert(maybe.hasValue()), maybe.value())
+
+    def assert_common_checks(e) -> Expr:
+        return MagicAssert(And(
+            e.rekey_to() == Global.zero_address(),
+            e.close_remainder_to() == Global.zero_address(),
+            e.asset_close_to() == Global.zero_address()
+        ))
 
     @Subroutine(TealType.none)
     def checkFeePmt(off : Expr):
         return Seq([
             If(mfee.load() > Int(0), Seq([
                     tidx.store(Txn.group_index() - off),
-                    Assert(And(
+                    MagicAssert(And(
                         Gtxn[tidx.load()].type_enum() == TxnType.Payment,
                         Gtxn[tidx.load()].sender() == Txn.sender(),
                         Gtxn[tidx.load()].receiver() == Global.current_application_address(),
-                        Gtxn[tidx.load()].rekey_to() == Global.zero_address(),
                         Gtxn[tidx.load()].amount() >= mfee.load()
-                    ))
+                    )),
+                    assert_common_checks(Gtxn[tidx.load()])
             ]))
         ])
 
@@ -159,7 +176,7 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
             [dec == Int(14), Int(1000000)],
             [dec == Int(15), Int(10000000)],
             [dec == Int(16), Int(100000000)],
-            [dec >  Int(16), Seq([Assert(dec < Int(16)), Int(1)])],
+            [dec >  Int(16), Seq(Reject(), Int(1))],
             [dec < Int(9), Int(1)]
         )
 
@@ -211,26 +228,22 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
             # All governance must be done with the most recent guardian set...
             set.store(governanceSet()),
             idx.store(Extract(Txn.application_args[1], Int(1), Int(4))),
-            Assert(Btoi(idx.load()) == set.load()),
+            MagicAssert(Btoi(idx.load()) == set.load()),
 
             # The offset of the chain
             off.store(Btoi(Extract(Txn.application_args[1], Int(5), Int(1))) * Int(66) + Int(14)), 
 
             verifyIdx.store(Txn.group_index() - Int(1)),
 
-            Assert(And(
+            MagicAssert(And(
                 # Did verifyVAA pass?
                 verifyVAA.type_enum() == TxnType.ApplicationCall,
                 verifyVAA.application_id() == App.globalGet(Bytes("coreid")),
                 verifyVAA.application_args[0] == Bytes("verifyVAA"),
                 verifyVAA.sender() == Txn.sender(),
-                verifyVAA.rekey_to() == Global.zero_address(),
 
                 # Lets see if the vaa we are about to process was actually verified by the core
                 verifyVAA.application_args[1] == Txn.application_args[1],
-
-                # What checks should I give myself
-                Txn.rekey_to() == Global.zero_address(),
 
                 # We all opted into the same accounts?
                 verifyVAA.accounts[0] == Txn.accounts[0],
@@ -242,42 +255,38 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
                 Extract(Txn.application_args[1], off.load() + Int(2), Int(32)) == Concat(BytesZero(Int(31)), Bytes("base16", "04")),
             )),
 
-            off.store(off.load() + Int(43)),
-            # correct module?
-            Assert(Extract(Txn.application_args[1], off.load(), Int(32)) == Concat(BytesZero(Int(21)), Bytes("base16", "546f6b656e427269646765"))),
+            assert_common_checks(verifyVAA),
+            assert_common_checks(Txn),
 
-            off.store(off.load() + Int(32)),
-            a.store(Btoi(Extract(Txn.application_args[1], off.load(), Int(1)))),
-            off.store(off.load() + Int(1)),
+            # correct module?
+            MagicAssert(Extract(Txn.application_args[1], off.load() + Int(43), Int(32)) == Concat(BytesZero(Int(21)), Bytes("base16", "546f6b656e427269646765"))),
+            a.store(Btoi(Extract(Txn.application_args[1], off.load() + Int(75), Int(1)))),
+            off.store(off.load() + Int(76)),
 
             Cond( 
                 [a.load() == Int(1), Seq([
                     targetChain.store(Btoi(Extract(Txn.application_args[1], off.load(), Int(2)))),
 
-                    Assert(Or((targetChain.load() == Int(0)), (targetChain.load() == Int(8)))),
+                    MagicAssert(Or((targetChain.load() == Int(0)), (targetChain.load() == Int(8)))),
 
-                    off.store(off.load() + Int(2)),
-                    chain.store(Extract(Txn.application_args[1], off.load(), Int(2))),
-
-                    off.store(off.load() + Int(2)),
-                    emitter.store(Extract(Txn.application_args[1], off.load(), Int(32))),
+                    chain.store(Extract(Txn.application_args[1], off.load() + Int(2), Int(2))),
+                    emitter.store(Extract(Txn.application_args[1], off.load() + Int(4), Int(32))),
 
                     # Can I only register once?  Rumor says yes
-                    Assert(App.globalGet(Concat(Bytes("Chain"), chain.load())) == Int(0)),
+                    MagicAssert(App.globalGet(Concat(Bytes("Chain"), chain.load())) == Int(0)),
 
                     App.globalPut(Concat(Bytes("Chain"), chain.load()), emitter.load()),
                 ])],
                 [a.load() == Int(2), Seq([
-                    Assert(Extract(Txn.application_args[1], off.load(), Int(2)) == Bytes("base16", "0008")),
-                    off.store(off.load() + Int(2)),
-                    App.globalPut(Bytes("validUpdateApproveHash"), Extract(Txn.application_args[1], off.load(), Int(32)))
+                    MagicAssert(Extract(Txn.application_args[1], off.load(), Int(2)) == Bytes("base16", "0008")),
+                    App.globalPut(Bytes("validUpdateApproveHash"), Extract(Txn.application_args[1], off.load() + Int(2), Int(32)))
                 ])]
             ),
 
             Approve()
         ])
     
-    def createWrapped():
+    def receiveAttest():
         me = Global.current_application_address()
         off = ScratchVar()
         
@@ -297,13 +306,12 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
             checkForDuplicate(),
 
             tidx.store(Txn.group_index() - Int(4)),
-            Assert(And(
+            MagicAssert(And(
                 # Lets see if the vaa we are about to process was actually verified by the core
                 Gtxn[tidx.load()].type_enum() == TxnType.ApplicationCall,
                 Gtxn[tidx.load()].application_id() == App.globalGet(Bytes("coreid")),
                 Gtxn[tidx.load()].application_args[0] == Bytes("verifyVAA"),
                 Gtxn[tidx.load()].sender() == Txn.sender(),
-                Gtxn[tidx.load()].rekey_to() == Global.zero_address(),
 
                 # we are all taking about the same vaa?
                 Gtxn[tidx.load()].application_args[1] == Txn.application_args[1],
@@ -313,48 +321,49 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
                 Gtxn[tidx.load()].accounts[1] == Txn.accounts[1],
                 Gtxn[tidx.load()].accounts[2] == Txn.accounts[2],
                 )),
+            assert_common_checks(Gtxn[tidx.load()]),
                 
             tidx.store(Txn.group_index() - Int(3)),
-            Assert(And(
+            MagicAssert(And(
                 # Did the user pay the lsig to attest a new product?
                 Gtxn[tidx.load()].type_enum() == TxnType.Payment,
                 Gtxn[tidx.load()].amount() >= Int(100000),
                 Gtxn[tidx.load()].sender() == Txn.sender(),
                 Gtxn[tidx.load()].receiver() == Txn.accounts[3],
-                Gtxn[tidx.load()].rekey_to() == Global.zero_address(),
                 )),
+            assert_common_checks(Gtxn[tidx.load()]),
 
             tidx.store(Txn.group_index() - Int(2)),
-            Assert(And(
+            MagicAssert(And(
                 # We had to buy some extra CPU
                 Gtxn[tidx.load()].type_enum() == TxnType.ApplicationCall,
                 Gtxn[tidx.load()].application_id() == Global.current_application_id(),
                 Gtxn[tidx.load()].application_args[0] == Bytes("nop"),
                 Gtxn[tidx.load()].sender() == Txn.sender(),
-                Gtxn[tidx.load()].rekey_to() == Global.zero_address(),
                 )),
+            assert_common_checks(Gtxn[tidx.load()]),
 
             tidx.store(Txn.group_index() - Int(1)),
-            Assert(And(
+            MagicAssert(And(
                 Gtxn[tidx.load()].type_enum() == TxnType.ApplicationCall,
                 Gtxn[tidx.load()].application_id() == Global.current_application_id(),
                 Gtxn[tidx.load()].application_args[0] == Bytes("nop"),
                 Gtxn[tidx.load()].sender() == Txn.sender(),
-                Gtxn[tidx.load()].rekey_to() == Global.zero_address(),
                 
                 (Global.group_size() - Int(1)) == Txn.group_index()    # This should be the last entry...
             )),
+            assert_common_checks(Gtxn[tidx.load()]),
 
             off.store(Btoi(Extract(Txn.application_args[1], Int(5), Int(1))) * Int(66) + Int(6) + Int(8)), # The offset of the chain
             Chain.store(Btoi(Extract(Txn.application_args[1], off.load(), Int(2)))),
 
             # Make sure that the emitter on the sending chain is correct for the token bridge
-            Assert(App.globalGet(Concat(Bytes("Chain"), Extract(Txn.application_args[1], off.load(), Int(2)))) 
+            MagicAssert(App.globalGet(Concat(Bytes("Chain"), Extract(Txn.application_args[1], off.load(), Int(2)))) 
                    == Extract(Txn.application_args[1], off.load() + Int(2), Int(32))),
             
             off.store(off.load()+Int(43)),
 
-            Assert(Int(2) ==      Btoi(Extract(Txn.application_args[1], off.load(),           Int(1)))),
+            MagicAssert(Int(2) ==      Btoi(Extract(Txn.application_args[1], off.load(),      Int(1)))),
             Address.store(             Extract(Txn.application_args[1], off.load() + Int(1),  Int(32))),
             
             FromChain.store(      Btoi(Extract(Txn.application_args[1], off.load() + Int(33), Int(2)))),
@@ -379,7 +388,7 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
             If(Decimals.load() > Int(8), Decimals.store(Int(8))),
 
             #   This confirms the user gave us access to the correct memory for this asset..
-            Assert(Txn.accounts[3] == get_sig_address(FromChain.load(), Address.load())),
+            MagicAssert(Txn.accounts[3] == get_sig_address(FromChain.load(), Address.load())),
 
             # Lets see if we've seen this asset before
             asset.store(blob.read(Int(3), Int(0), Int(8))),
@@ -451,13 +460,12 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
 
             tidx.store(Txn.group_index() - Int(1)),
 
-            Assert(And(
+            MagicAssert(And(
                 # Lets see if the vaa we are about to process was actually verified by the core
                 Gtxn[tidx.load()].type_enum() == TxnType.ApplicationCall,
                 Gtxn[tidx.load()].application_id() == App.globalGet(Bytes("coreid")),
                 Gtxn[tidx.load()].application_args[0] == Bytes("verifyVAA"),
                 Gtxn[tidx.load()].sender() == Txn.sender(),
-                Gtxn[tidx.load()].rekey_to() == Global.zero_address(),
 
                 # Lets see if the vaa we are about to process was actually verified by the core
                 Gtxn[tidx.load()].application_args[1] == Txn.application_args[1],
@@ -465,11 +473,10 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
                 # We all opted into the same accounts?
                 Gtxn[tidx.load()].accounts[0] == Txn.accounts[0],
                 Gtxn[tidx.load()].accounts[1] == Txn.accounts[1],
-                Gtxn[tidx.load()].accounts[2] == Txn.accounts[2],
-
-                
-                (Global.group_size() - Int(1)) == Txn.group_index()    # This should be the last entry...
+                Gtxn[tidx.load()].accounts[2] == Txn.accounts[2]
             )),
+            assert_common_checks(Gtxn[tidx.load()]),
+            assert_common_checks(Txn),
 
             off.store(Btoi(Extract(Txn.application_args[1], Int(5), Int(1))) * Int(66) + Int(6) + Int(8)), # The offset of the chain
 
@@ -479,17 +486,17 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
             # We coming from the correct emitter on the sending chain for the token bridge
             # ... This is 90% of the security...
             If(Chain.load() == Int(8),
-               Assert(Global.current_application_address() == Emitter.load()), # This came from us?
-               Assert(App.globalGet(Concat(Bytes("Chain"), Extract(Txn.application_args[1], off.load(), Int(2)))) == Emitter.load())),
+               MagicAssert(Global.current_application_address() == Emitter.load()), # This came from us?
+               MagicAssert(App.globalGet(Concat(Bytes("Chain"), Extract(Txn.application_args[1], off.load(), Int(2)))) == Emitter.load())),
 
             off.store(off.load()+Int(43)),
 
             # This is a transfer message... right?
             action.store(Btoi(Extract(Txn.application_args[1], off.load(), Int(1)))),
 
-            Assert(Or(action.load() == Int(1), action.load() == Int(3))),
+            MagicAssert(Or(action.load() == Int(1), action.load() == Int(3))),
 
-            Assert(Extract(Txn.application_args[1], off.load() + Int(1), Int(24)) == Extract(zb.load(), Int(0), Int(24))),
+            MagicAssert(Extract(Txn.application_args[1], off.load() + Int(1), Int(24)) == Extract(zb.load(), Int(0), Int(24))),
             Amount.store(        Btoi(Extract(Txn.application_args[1], off.load() + Int(25), Int(8)))),  # uint256
 
             Origin.store(             Extract(Txn.application_args[1], off.load() + Int(33), Int(32))),
@@ -497,20 +504,28 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
             Destination.store(        Extract(Txn.application_args[1], off.load() + Int(67), Int(32))),
             DestChain.store(     Btoi(Extract(Txn.application_args[1], off.load() + Int(99), Int(2)))),
 
-            Assert(Extract(Txn.application_args[1], off.load() + Int(101),Int(24)) == Extract(zb.load(), Int(0), Int(24))),
+            MagicAssert(Extract(Txn.application_args[1], off.load() + Int(101),Int(24)) == Extract(zb.load(), Int(0), Int(24))),
             Fee.store(           Btoi(Extract(Txn.application_args[1], off.load() + Int(125),Int(8)))),  # uint256
 
             # This directed at us?
-            Assert(DestChain.load() == Int(8)),
+            MagicAssert(DestChain.load() == Int(8)),
 
-            Assert(Fee.load() <= Amount.load()),
+            MagicAssert(Fee.load() <= Amount.load()),
 
-            If (action.load() == Int(3), Assert(Destination.load() == Txn.sender())),
+            If (action.load() == Int(3), Seq([
+                    tidx.store(Txn.group_index() + Int(1)),
+                    MagicAssert(And(
+                        Gtxn[tidx.load()].type_enum() == TxnType.ApplicationCall,
+                        Gtxn[tidx.load()].application_args[0] == Txn.application_args[0],
+                        Gtxn[tidx.load()].application_args[1] == Txn.application_args[1]
+                    )),
+                    MagicAssert(getNextAddress() == Destination.load())
+            ])),
 
             If(OriginChain.load() == Int(8),
                Seq([
                    asset.store(Btoi(Extract(Origin.load(), Int(24), Int(8)))),
-                   Assert(Txn.accounts[3] == get_sig_address(asset.load(), Bytes("native"))),
+                   MagicAssert(Txn.accounts[3] == get_sig_address(asset.load(), Bytes("native"))),
                    # Now, the horrible part... we have to scale the amount back out to compensate for the "dedusting" 
                    # when this was sent...
 
@@ -558,7 +573,7 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
                Seq([
                    # Lets see if we've seen this asset before
                    asset.store(Btoi(blob.read(Int(3), Int(0), Int(8)))),
-                   Assert(And(
+                   MagicAssert(And(
                        asset.load() != Int(0),
                        Txn.accounts[3] == get_sig_address(OriginChain.load(), Origin.load())
                      )
@@ -649,16 +664,6 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
             zb.store(BytesZero(Int(32))),
 
             aid.store(Btoi(Txn.application_args[1])),
-            Assert(And(
-                # We dont know what we don't know.   Is it readonable
-                # to be so restrictive in a wormhole asset transfer?
-                # to not let you put more crap in the same txn block?
-                Txn.group_index() == Int(2),
-                Global.group_size() == Int(3),
-                Len(Txn.application_args[3]) <= Int(32)
-            )),
-
-            aid.store(Btoi(Txn.application_args[1])),
 
             # what should we pass as a fee...
             fee.store(Btoi(Txn.application_args[5])),
@@ -669,33 +674,35 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
 
             If(aid.load() == Int(0),
                Seq([
-                   Assert(And(
+                   MagicAssert(And(
                        # The previous txn is the asset transfer itself
                        Gtxn[tidx.load()].type_enum() == TxnType.Payment,
                        Gtxn[tidx.load()].sender() == Txn.sender(),
                        Gtxn[tidx.load()].receiver() == Txn.accounts[2],
-                       Gtxn[tidx.load()].rekey_to() == Global.zero_address(),
                    )),
+                   assert_common_checks(Gtxn[tidx.load()]),
+
                    amount.store(Gtxn[tidx.load()].amount()),
                    
-                   Assert(fee.load() < amount.load()),
+                   MagicAssert(fee.load() < amount.load()),
                    amount.store(amount.load() - fee.load())
                ]),
                Seq([
 
-                   Assert(And(
+                   MagicAssert(And(
                        # The previous txn is the asset transfer itself
                        Gtxn[tidx.load()].type_enum() == TxnType.AssetTransfer,
                        Gtxn[tidx.load()].sender() == Txn.sender(),
                        Gtxn[tidx.load()].xfer_asset() == aid.load(),
                        Gtxn[tidx.load()].asset_receiver() == Txn.accounts[2],
-                       Gtxn[tidx.load()].rekey_to() == Global.zero_address(),
                    )),
+                   assert_common_checks(Gtxn[tidx.load()]),
+
                    amount.store(Gtxn[tidx.load()].asset_amount()),
 
 
                    # peal the fee off the amount
-                   Assert(fee.load() <= amount.load()),
+                   MagicAssert(fee.load() <= amount.load()),
                    amount.store(amount.load() - fee.load()),
 
                    factor.store(getFactor(Btoi(extract_decimal(aid.load())))),
@@ -711,7 +718,7 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
 
 
             # If it is nothing but dust lets just abort the whole transaction and save 
-            Assert(And(amount.load() > Int(0), fee.load() >= Int(0))),
+            MagicAssert(And(amount.load() > Int(0), fee.load() >= Int(0))),
 
             If(aid.load() != Int(0),
                aaddr.store(auth_addr(extract_creator(aid.load()))),
@@ -724,25 +731,25 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
 
                    asset.store(blob.read(Int(2), Int(0), Int(8))),
                    # This the correct asset?
-                   Assert(Txn.application_args[1] == asset.load()),
+                   MagicAssert(Txn.application_args[1] == asset.load()),
 
                    # Pull the address and chain out of the original vaa
                    Address.store(blob.read(Int(2), Int(60), Int(92))),
                    FromChain.store(blob.read(Int(2), Int(92), Int(94))),
 
                    # This the correct page given the chain and the address
-                   Assert(Txn.accounts[2] == get_sig_address(Btoi(FromChain.load()), Address.load())),
+                   MagicAssert(Txn.accounts[2] == get_sig_address(Btoi(FromChain.load()), Address.load())),
                ]),
                Seq([
 #                   Log(Bytes("Non Wormhole wrapped")),
-                   Assert(Txn.accounts[2] == get_sig_address(aid.load(), Bytes("native"))),
+                   MagicAssert(Txn.accounts[2] == get_sig_address(aid.load(), Bytes("native"))),
                    FromChain.store(Bytes("base16", "0008")),
                    Address.store(Txn.application_args[1]),
                ])
             ),
 
             # Correct address len?
-            Assert(And(
+            MagicAssert(And(
                 Len(Address.load()) <= Int(32),
                 Len(FromChain.load()) == Int(2),
                 Len(Txn.application_args[3]) <= Int(32)
@@ -767,8 +774,8 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
 
             # This one magic line should protect us from overruns/underruns and trickery..
             If(Txn.application_args.length() == Int(7), 
-               Assert(Len(p.load()) == Int(133) + Len(Txn.application_args[6])),
-               Assert(Len(p.load()) == Int(133))),
+               MagicAssert(Len(p.load()) == Int(133) + Len(Txn.application_args[6])),
+               MagicAssert(Len(p.load()) == Int(133))),
 
             InnerTxnBuilder.Begin(),
             sendMfee(),
@@ -789,10 +796,8 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
 
     def do_optin():
         return Seq([
-            Assert(And(
-                Txn.rekey_to() == Global.zero_address(),
-                Txn.accounts[1] == get_sig_address(Btoi(Txn.application_args[1]), Bytes("native"))
-            )),
+            MagicAssert(Txn.accounts[1] == get_sig_address(Btoi(Txn.application_args[1]), Bytes("native"))),
+            assert_common_checks(Txn),
 
             InnerTxnBuilder.Begin(),
             InnerTxnBuilder.SetFields(
@@ -809,9 +814,6 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
 
             Approve()
         ])
-
-    def transferWithPayload():
-        return Seq([Approve()])
 
     # This is for attesting
     def attestToken():
@@ -833,30 +835,30 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
 
             aid.store(Btoi(Txn.application_args[1])),
             # Is the authorizing signature of the creator of the asset the address of the token_bridge app itself?
-            If(auth_addr(extract_creator(aid.load())) == Global.current_application_address(),
+            If(If(aid.load() != Int(0), auth_addr(extract_creator(aid.load())) == Global.current_application_address(), Int(0)),
                Seq([
 #                   Log(Bytes("Wormhole wrapped")),
                    # Wormhole wrapped asset
                    asset.store(blob.read(Int(2), Int(0), Int(8))),
                    # This the correct asset?
-                   Assert(Txn.application_args[1] == asset.load()),
+                   MagicAssert(Txn.application_args[1] == asset.load()),
 
                    # Pull the address and chain out of the original vaa
                    Address.store(blob.read(Int(2), Int(60), Int(92))),
                    FromChain.store(Btoi(blob.read(Int(2), Int(92), Int(94)))),
 
                    # This the correct page given the chain and the address
-                   Assert(Txn.accounts[2] == get_sig_address(FromChain.load(), Address.load())),
+                   MagicAssert(Txn.accounts[2] == get_sig_address(FromChain.load(), Address.load())),
 
                    # this is wormhole wrapped... it shouldn't be busting 8 
-                   Assert(Btoi(extract_decimal(aid.load())) <= Int(8)),
+                   MagicAssert(Btoi(extract_decimal(aid.load())) <= Int(8)),
 
                    # Lets just hand back the previously generated vaa payload
                    p.store(blob.read(Int(2), Int(8), Int(108)))
                ]),
                Seq([
 #                   Log(Bytes("Non Wormhole wrapped")),
-                   Assert(Txn.accounts[2] == get_sig_address(aid.load(), Bytes("native"))),
+                   MagicAssert(Txn.accounts[2] == get_sig_address(aid.load(), Bytes("native"))),
 
                    zb.store(BytesZero(Int(32))),
                    
@@ -882,7 +884,7 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
                            Bytes("base16", "02"),
                            #TokenAddress [32]uint8
                            Extract(zb.load(),Int(0), Int(24)),
-                           Txn.application_args[1],
+                           Itob(aid.load()),
                            #TokenChain uint16
                            Bytes("base16", "0008"),
                            #Decimals uint8
@@ -898,7 +900,7 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
                ])
                ),
 
-            Assert(Len(p.load()) == Int(100)),
+            MagicAssert(Len(p.load()) == Int(100)),
 
             InnerTxnBuilder.Begin(),
             sendMfee(),
@@ -927,7 +929,7 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
 
         return Seq(
             # VM only is version 1
-            Assert(Btoi(Extract(Txn.application_args[1], Int(0), Int(1))) == Int(1)),
+            MagicAssert(Btoi(Extract(Txn.application_args[1], Int(0), Int(1))) == Int(1)),
 
             off.store(Btoi(Extract(Txn.application_args[1], Int(5), Int(1))) * Int(66) + Int(14)), # The offset of the emitter
 
@@ -937,14 +939,14 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
 
             # They passed us the correct account?  In this case, byte_offset points at the whole block
             byte_offset.store(sequence.load() / Int(max_bits)),
-            Assert(Txn.accounts[1] == get_sig_address(byte_offset.load(), emitter.load())),
+            MagicAssert(Txn.accounts[1] == get_sig_address(byte_offset.load(), emitter.load())),
 
             # Now, lets go grab the raw byte
             byte_offset.store((sequence.load() / Int(8)) % Int(max_bytes)),
             b.store(blob.get_byte(Int(1), byte_offset.load())),
 
             # I would hope we've never seen this packet before...   throw an exception if we have
-            Assert(GetBit(b.load(), sequence.load() % Int(8)) == Int(0)),
+            MagicAssert(GetBit(b.load(), sequence.load() % Int(8)) == Int(0)),
 
             # Lets mark this bit so that we never see it again
             blob.set_byte(Int(1), byte_offset.load(), SetBit(b.load(), sequence.load() % Int(8), Int(1)))
@@ -955,13 +957,12 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
 
     router = Cond(
         [METHOD == Bytes("nop"), nop()],
-        [METHOD == Bytes("createWrapped"), createWrapped()],
+        [METHOD == Bytes("receiveAttest"), receiveAttest()],
         [METHOD == Bytes("attestToken"), attestToken()],
         [METHOD == Bytes("completeTransfer"), completeTransfer()],
         [METHOD == Bytes("sendTransfer"), sendTransfer()],
         [METHOD == Bytes("optin"), do_optin()],
-        [METHOD == Bytes("transferWithPayload"), transferWithPayload()],
-        [METHOD == Bytes("governance"), governance()],
+        [METHOD == Bytes("governance"), governance()]
     )
 
     on_create = Seq( [
@@ -972,27 +973,19 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
         Return(Int(1))
     ])
 
-    progHash = ScratchVar()
-    progSet = ScratchVar()
-    clearHash = ScratchVar()
-    clearSet = ScratchVar()
-    
-    on_update = Seq( [
-        progHash.store(Sha512_256(Concat(Bytes("Program"), Txn.approval_program()))),
-        progSet.store(App.globalGet(Bytes("validUpdateApproveHash"))),
-        Log(progHash.load()),
-        Log(progSet.load()),
-        Assert(progHash.load() == progSet.load()),
+    def getOnUpdate():
+        if devMode:
+            return Seq( [
+                Return(Txn.sender() == Global.creator_address()),
+            ])
+        else:
+            return Seq( [
+                MagicAssert(Sha512_256(Concat(Bytes("Program"), Txn.approval_program())) == App.globalGet(Bytes("validUpdateApproveHash"))),
+                MagicAssert(Sha512_256(Concat(Bytes("Program"), Txn.clear_state_program())) == App.globalGet(Bytes("validUpdateClearHash"))),
+                Return(Int(1))
+            ] )
 
-        clearHash.store(Sha512_256(Concat(Bytes("Program"), Txn.clear_state_program()))),
-        clearSet.store(App.globalGet(Bytes("validUpdateClearHash"))),
-        Log(clearHash.load()),
-        Log(clearSet.load()),
-        Assert(clearHash.load() == clearSet.load()),
-
-        Return(Int(1))
-    ] )
-
+    on_update = getOnUpdate()
 
     @Subroutine(TealType.uint64)
     def optin():
@@ -1006,14 +999,12 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
             algo_seed.amount() == Int(seed_amt),
             # Check that its an opt in to us
             optin.type_enum() == TxnType.ApplicationCall,
-            optin.on_completion() == OnComplete.OptIn,
-            # Not strictly necessary since we wouldn't be seeing this unless it was us, but...
-            optin.application_id() == Global.current_application_id(),
+            optin.on_completion() == OnComplete.OptIn
         )
 
         return Seq(
             # Make sure its a valid optin
-            Assert(well_formed_optin),
+            MagicAssert(well_formed_optin),
             # Init by writing to the full space available for the sender (Int(0))
             blob.zero(Int(0)),
             # we gucci
@@ -1032,8 +1023,8 @@ def approve_token_bridge(seed_amt: int, tmpl_sig: TmplSig):
         [Txn.on_completion() == OnComplete.NoOp, router]
     )
 
-def get_token_bridge(genTeal, approve_name, clear_name, client: AlgodClient, seed_amt: int = 0, tmpl_sig: TmplSig = None) -> Tuple[bytes, bytes]:
-    APPROVAL_PROGRAM = fullyCompileContract(genTeal, client, approve_token_bridge(seed_amt, tmpl_sig), approve_name)
+def get_token_bridge(genTeal, approve_name, clear_name, client: AlgodClient, seed_amt: int, tmpl_sig: TmplSig, devMode: bool) -> Tuple[bytes, bytes]:
+    APPROVAL_PROGRAM = fullyCompileContract(genTeal, client, approve_token_bridge(seed_amt, tmpl_sig, devMode), approve_name)
     CLEAR_STATE_PROGRAM = fullyCompileContract(genTeal, client, clear_token_bridge(), clear_name)
 
     return APPROVAL_PROGRAM, CLEAR_STATE_PROGRAM

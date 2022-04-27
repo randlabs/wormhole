@@ -2,9 +2,11 @@ import { arrayify, zeroPad } from "@ethersproject/bytes";
 import { PublicKey } from "@solana/web3.js";
 import { hexValue, hexZeroPad, stripZeros } from "ethers/lib/utils";
 import { canonicalAddress, humanAddress, isNativeDenom } from "../terra";
+import { hexToNativeStringAlgo, nativeStringToHexAlgo } from "../algorand";
 import {
   ChainId,
   CHAIN_ID_ACALA,
+  CHAIN_ID_ALGORAND,
   CHAIN_ID_AURORA,
   CHAIN_ID_AVAX,
   CHAIN_ID_BSC,
@@ -12,6 +14,7 @@ import {
   CHAIN_ID_ETHEREUM_ROPSTEN,
   CHAIN_ID_FANTOM,
   CHAIN_ID_KARURA,
+  CHAIN_ID_KLAYTN,
   CHAIN_ID_OASIS,
   CHAIN_ID_POLYGON,
   CHAIN_ID_SOLANA,
@@ -29,7 +32,8 @@ export const isEVMChain = (chainId: ChainId) => {
     chainId === CHAIN_ID_AURORA ||
     chainId === CHAIN_ID_FANTOM ||
     chainId === CHAIN_ID_KARURA ||
-    chainId === CHAIN_ID_ACALA
+    chainId === CHAIN_ID_ACALA ||
+    chainId === CHAIN_ID_KLAYTN
   );
 };
 
@@ -52,6 +56,8 @@ export const hexToNativeString = (h: string | undefined, c: ChainId) => {
       ? isHexNativeTerra(h)
         ? nativeTerraHexToDenom(h)
         : humanAddress(hexToUint8Array(h.substr(24))) // terra expects 20 bytes, not 32
+      : c === CHAIN_ID_ALGORAND
+      ? hexToNativeStringAlgo(h)
       : h;
   } catch (e) {}
   return undefined;
@@ -80,6 +86,8 @@ export const nativeToHexString = (
     } else {
       return uint8ArrayToHex(zeroPad(canonicalAddress(address), 32));
     }
+  } else if (chain === CHAIN_ID_ALGORAND) {
+      return nativeStringToHexAlgo(address);
   } else {
     return null;
   }

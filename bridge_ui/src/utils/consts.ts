@@ -1,6 +1,7 @@
 import {
   ChainId,
   CHAIN_ID_ACALA,
+  CHAIN_ID_ALGORAND,
   CHAIN_ID_AURORA,
   CHAIN_ID_AVAX,
   CHAIN_ID_BSC,
@@ -18,6 +19,7 @@ import { clusterApiUrl } from "@solana/web3.js";
 import { getAddress } from "ethers/lib/utils";
 import { CHAIN_CONFIG_MAP } from "../config";
 import acalaIcon from "../icons/acala.svg";
+import algorandIcon from "../icons/algorand.svg";
 import auroraIcon from "../icons/aurora.svg";
 import avaxIcon from "../icons/avax.svg";
 import bscIcon from "../icons/bsc.svg";
@@ -44,6 +46,11 @@ export interface ChainInfo {
 export const CHAINS: ChainInfo[] =
   CLUSTER === "mainnet"
     ? [
+        {
+          id: CHAIN_ID_AURORA,
+          name: "Aurora",
+          logo: auroraIcon,
+        },
         {
           id: CHAIN_ID_AVAX,
           name: "Avalanche",
@@ -91,6 +98,11 @@ export const CHAINS: ChainInfo[] =
           id: CHAIN_ID_ACALA,
           name: "Acala",
           logo: acalaIcon,
+        },
+        {
+          id: CHAIN_ID_ALGORAND,
+          name: "Algorand",
+          logo: algorandIcon,
         },
         {
           id: CHAIN_ID_AURORA,
@@ -150,6 +162,11 @@ export const CHAINS: ChainInfo[] =
       ]
     : [
         {
+          id: CHAIN_ID_ALGORAND,
+          name: "Algorand",
+          logo: algorandIcon,
+        },
+        {
           id: CHAIN_ID_BSC,
           name: "Binance Smart Chain",
           logo: bscIcon,
@@ -207,6 +224,8 @@ export const getDefaultNativeCurrencySymbol = (chainId: ChainId) =>
     ? "AVAX"
     : chainId === CHAIN_ID_OASIS
     ? "ROSE"
+    : chainId === CHAIN_ID_ALGORAND
+    ? "ALGO"
     : chainId === CHAIN_ID_AURORA
     ? "ETH"
     : chainId === CHAIN_ID_FANTOM
@@ -227,6 +246,8 @@ export const getExplorerName = (chainId: ChainId) =>
     ? "Polygonscan"
     : chainId === CHAIN_ID_AVAX
     ? "Snowtrace"
+    : chainId === CHAIN_ID_ALGORAND
+    ? "AlgoExplorer"
     : chainId === CHAIN_ID_FANTOM
     ? "FTMScan"
     : "Explorer";
@@ -315,17 +336,36 @@ export const TERRA_HOST =
         chainID: "columbus-5",
         name: "localterra",
       };
+export const ALGORAND_HOST =
+  CLUSTER === "mainnet"
+    ? {
+        algodToken: "",
+        algodServer: "https://node.algoexplorerapi.io",
+        algodPort: "",
+      }
+    : CLUSTER === "testnet"
+    ? {
+        algodToken: "",
+        algodServer: "https://node.testnet.algoexplorerapi.io",
+        algodPort: "",
+      }
+    : {
+        algodToken:
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        algodServer: "http://localhost",
+        algodPort: "4001",
+      };
 export const KARURA_HOST =
   CLUSTER === "mainnet"
     ? ""
     : CLUSTER === "testnet"
-    ? "http://103.253.145.222:8545"
+    ? "https://karura-dev.aca-dev.network/eth/http"
     : "";
 export const ACALA_HOST =
   CLUSTER === "mainnet"
     ? ""
     : CLUSTER === "testnet"
-    ? "http://157.245.252.103:8545"
+    ? "https://acala-dev.aca-dev.network/eth/http"
     : "";
 export const ETH_BRIDGE_ADDRESS = getAddress(
   CLUSTER === "mainnet"
@@ -434,21 +474,21 @@ export const OASIS_TOKEN_BRIDGE_ADDRESS = getAddress(
 );
 export const AURORA_BRIDGE_ADDRESS = getAddress(
   CLUSTER === "mainnet"
-    ? "0x0000000000000000000000000000000000000000"
+    ? "0xa321448d90d4e5b0A732867c18eA198e75CAC48E"
     : CLUSTER === "testnet"
     ? "0xBd07292de7b505a4E803CEe286184f7Acf908F5e"
     : "0xC89Ce4735882C9F0f0FE26686c53074E09B0D550"
 );
 export const AURORA_NFT_BRIDGE_ADDRESS = getAddress(
   CLUSTER === "mainnet"
-    ? "0x0000000000000000000000000000000000000000"
+    ? "0x6dcC0484472523ed9Cdc017F711Bcbf909789284"
     : CLUSTER === "testnet"
     ? "0x8F399607E9BA2405D87F5f3e1B78D950b44b2e24"
     : "0x26b4afb60d6c903165150c6f0aa14f8016be4aec"
 );
 export const AURORA_TOKEN_BRIDGE_ADDRESS = getAddress(
   CLUSTER === "mainnet"
-    ? "0x0000000000000000000000000000000000000000"
+    ? "0x51b5123a7b0F9b2bA265f9c4C8de7D78D52f510F"
     : CLUSTER === "testnet"
     ? "0xD05eD3ad637b890D68a854d607eEAF11aF456fba"
     : "0x0290FB167208Af455bB137780163b7B7a9a10C16"
@@ -574,6 +614,10 @@ export const TERRA_TOKEN_BRIDGE_ADDRESS =
     : CLUSTER === "testnet"
     ? "terra1pseddrv0yfsn76u4zxrjmtf45kdlmalswdv39a"
     : "terra10pyejy66429refv3g35g2t7am0was7ya7kz2a4";
+export const ALGORAND_BRIDGE_ID =
+  CLUSTER === "mainnet" ? 0 : CLUSTER === "testnet" ? 85424948 : 4;
+export const ALGORAND_TOKEN_BRIDGE_ID =
+  CLUSTER === "mainnet" ? 0 : CLUSTER === "testnet" ? 85424960 : 6;
 
 export const getBridgeAddressForChain = (chainId: ChainId) =>
   chainId === CHAIN_ID_SOLANA
@@ -753,7 +797,7 @@ export const WROSE_DECIMALS = 18;
 
 export const WETH_AURORA_ADDRESS =
   CLUSTER === "mainnet"
-    ? "0x0000000000000000000000000000000000000000"
+    ? "0xC9BdeEd33CD01541e1eeD10f90519d2C06Fe3feB"
     : CLUSTER === "testnet"
     ? "0x9D29f395524B3C817ed86e2987A14c1897aFF849"
     : "0xDDb64fE46a91D46ee29420539FC25FD07c5FEa3E";
@@ -766,6 +810,22 @@ export const WFTM_ADDRESS =
     ? "0xf1277d1Ed8AD466beddF92ef448A132661956621"
     : "0xDDb64fE46a91D46ee29420539FC25FD07c5FEa3E";
 export const WFTM_DECIMALS = 18;
+
+export const KAR_ADDRESS =
+  CLUSTER === "mainnet"
+    ? "0x0000000000000000000100000000000000000080"
+    : CLUSTER === "testnet"
+    ? "0x0000000000000000000100000000000000000080"
+    : "0xDDb64fE46a91D46ee29420539FC25FD07c5FEa3E";
+export const KAR_DECIMALS = 12;
+
+export const ACA_ADDRESS =
+  CLUSTER === "mainnet"
+    ? "0x0000000000000000000100000000000000000000"
+    : CLUSTER === "testnet"
+    ? "0x0000000000000000000100000000000000000000"
+    : "0xDDb64fE46a91D46ee29420539FC25FD07c5FEa3E";
+export const ACA_DECIMALS = 12;
 
 export const WORMHOLE_V1_ETH_ADDRESS =
   CLUSTER === "mainnet"
@@ -1110,7 +1170,7 @@ export const getHowToAddToTokenListUrl = (chainId: ChainId) => {
 };
 
 export const SOLANA_TOKEN_METADATA_PROGRAM_URL =
-  "https://github.com/metaplex-foundation/metaplex/tree/master/rust/token-metadata/program";
+  "https://github.com/metaplex-foundation/metaplex-program-library/tree/master/token-metadata/program";
 export const MAX_VAA_UPLOAD_RETRIES_SOLANA = 5;
 
 export const POLYGON_TERRA_WRAPPED_TOKENS = [
@@ -1131,3 +1191,44 @@ export const getIsTransferDisabled = (
     ? !isSourceChain
     : !!disableTransfers;
 };
+
+export const LUNA_ADDRESS = "uluna";
+export const UST_ADDRESS = "uusd";
+
+export type RelayerCompareAsset = {
+  [key in ChainId]: string;
+};
+export const RELAYER_COMPARE_ASSET: RelayerCompareAsset = {
+  [CHAIN_ID_SOLANA]: "solana",
+  [CHAIN_ID_ETH]: "ethereum",
+  [CHAIN_ID_TERRA]: "terra-luna",
+  [CHAIN_ID_BSC]: "binancecoin",
+  [CHAIN_ID_POLYGON]: "matic-network",
+  [CHAIN_ID_AVAX]: "avalanche-2",
+  [CHAIN_ID_OASIS]: "oasis-network",
+  [CHAIN_ID_FANTOM]: "fantom",
+  [CHAIN_ID_AURORA]: "ethereum", // Aurora uses bridged ether
+} as RelayerCompareAsset;
+export const getCoinGeckoURL = (coinGeckoId: string) =>
+  `https://api.coingecko.com/api/v3/simple/price?ids=${coinGeckoId}&vs_currencies=usd`;
+
+export const RELAYER_INFO_URL =
+  CLUSTER === "mainnet"
+    ? "https://raw.githubusercontent.com/certusone/wormhole-relayer-list/main/relayer.json"
+    : CLUSTER === "testnet"
+    ? ""
+    : "/relayerExample.json";
+
+export const RELAY_URL_EXTENSION = "/relayvaa/";
+
+// also for karura
+export const ACALA_RELAYER_URL =
+  CLUSTER === "mainnet"
+    ? ""
+    : CLUSTER === "testnet"
+    ? "https://relayer.aca-dev.network"
+    : // ? "http://localhost:3111"
+      "";
+
+export const ACALA_RELAY_URL = `${ACALA_RELAYER_URL}/relay`;
+export const ACALA_SHOULD_RELAY_URL = `${ACALA_RELAYER_URL}/shouldRelay`;

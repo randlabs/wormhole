@@ -26,8 +26,6 @@ import (
 type (
 	// Watcher is responsible for looking over Algorand blockchain and reporting new transactions to the appid
 	Watcher struct {
-		urlRPC       string
-		urlToken     string
 		indexerRPC   string
 		indexerToken string
 		appid        uint64
@@ -57,8 +55,6 @@ var (
 
 // NewWatcher creates a new Algorand appid watcher
 func NewWatcher(
-	urlRPC      string,
-	urlToken     string,
 	indexerRPC   string,
 	indexerToken string,
 	appid        uint64,
@@ -67,8 +63,6 @@ func NewWatcher(
 	obsvReqC     chan *gossipv1.ObservationRequest,
 ) *Watcher {
 	return &Watcher{
-		urlRPC:       urlRPC,
-		urlToken:     urlToken,
 		indexerRPC:   indexerRPC,
 		indexerToken: indexerToken,
 		appid:        appid,
@@ -81,75 +75,77 @@ func NewWatcher(
 }
 
 func lookAtTxn(e *Watcher, t models.Transaction, logger *zap.Logger) {
-	if len(t.InnerTxns) > 0 {
-		for q := 0; q < len(t.InnerTxns); q++ {
-			var it = t.InnerTxns[q]
-			var at = it.ApplicationTransaction
+	for q := 0; q < len(t.InnerTxns); q++ {
+		var it = t.InnerTxns[q]
+		var at = it.ApplicationTransaction
 
-			if (len(at.ApplicationArgs) != 3) || (at.ApplicationId != e.appid) || (len(it.Logs) == 0) {
-				continue
-			}
+		if (len(at.ApplicationArgs) != 3) || (at.ApplicationId != e.appid) || (len(it.Logs) == 0) {
+			continue
+		}
 
-			if string(at.ApplicationArgs[0]) != "publishMessage" {
-				continue
+		if string(at.ApplicationArgs[0]) != "publishMessage" {
+			continue
 
-			}
+		}
 
-			if e.debug {
-				JSON, _ := json.Marshal(it)
+		if e.debug {
+			JSON, err := json.Marshal(it)
+			if err != nil {
+				logger.Error("Cannot JSON marshal transaction", zap.Error(err))
+			} else {
 				logger.Info(string(JSON))
 			}
-
-			emitter, err := types.DecodeAddress(it.Sender)
-			if nil != err {
-				logger.Info(err.Error())
-				continue;
-			}
-
-			var a vaa.Address
-			copy(a[:], emitter[:]) // 32 bytes = 8edf5b0e108c3a1a0a4b704cc89591f2ad8d50df24e991567e640ed720a94be2
-                                                             
-			if e.debug {
-				logger.Info("emitter: " + hex.EncodeToString(emitter[:]))
-			}
-
-			id, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(t.Id)
-			if nil != err {
-				logger.Info(err.Error())
-				continue;
-			}
-
-			if e.debug {
-				logger.Info("id: " + hex.EncodeToString(id) + " " + t.Id)
-			}
-
-			var txHash = eth_common.BytesToHash(id)   // 32 bytes = d3b136a6a182a40554b2fafbc8d12a7a22737c10c81e33b33d1dcb74c532708b
-
-			observation := &common.MessagePublication{
-				TxHash:           txHash,
-				Timestamp:        time.Unix(int64(it.RoundTime), 0),
-				Nonce:            uint32(binary.BigEndian.Uint64(at.ApplicationArgs[2])),
-				Sequence:         binary.BigEndian.Uint64(it.Logs[0]),
-				EmitterChain:     vaa.ChainIDAlgorand,
-				EmitterAddress:   a,
-				Payload:          at.ApplicationArgs[1],
-				ConsistencyLevel: 32,   // What SHOULD this be?
-			}
-			
-			algorandMessagesConfirmed.Inc()
-
-			logger.Info("message observed",
-				zap.Time("timestamp", observation.Timestamp),
-				zap.Uint32("nonce", observation.Nonce),
-				zap.Uint64("sequence", observation.Sequence),
-				zap.Stringer("emitter_chain", observation.EmitterChain),
-				zap.Stringer("emitter_address", observation.EmitterAddress),
-				zap.Binary("payload", observation.Payload),
-				zap.Uint8("consistency_level", observation.ConsistencyLevel),
-			)
-
-			e.msgChan <- observation
 		}
+
+		emitter, err := types.DecodeAddress(it.Sender)
+		if err != nil {
+			logger.Error("DecodeAddress", zap.Error(err))
+			continue;
+		}
+
+		var a vaa.Address
+		copy(a[:], emitter[:]) // 32 bytes = 8edf5b0e108c3a1a0a4b704cc89591f2ad8d50df24e991567e640ed720a94be2
+                                                             
+		if e.debug {
+			logger.Error("emitter: " + hex.EncodeToString(emitter[:]))
+		}
+
+		id, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(t.Id)
+		if err != nil {
+			logger.Error("Base32 DecodeString", zap.Error(err))
+			continue;
+		}
+
+		if e.debug {
+			logger.Info("id: " + hex.EncodeToString(id) + " " + t.Id)
+		}
+
+		var txHash = eth_common.BytesToHash(id)   // 32 bytes = d3b136a6a182a40554b2fafbc8d12a7a22737c10c81e33b33d1dcb74c532708b
+
+		observation := &common.MessagePublication{
+			TxHash:           txHash,
+			Timestamp:        time.Unix(int64(it.RoundTime), 0),
+			Nonce:            uint32(binary.BigEndian.Uint64(at.ApplicationArgs[2])),
+			Sequence:         binary.BigEndian.Uint64(it.Logs[0]),
+			EmitterChain:     vaa.ChainIDAlgorand,
+			EmitterAddress:   a,
+			Payload:          at.ApplicationArgs[1],
+			ConsistencyLevel: 0,
+		}
+		
+		algorandMessagesConfirmed.Inc()
+
+		logger.Info("message observed",
+			zap.Time("timestamp", observation.Timestamp),
+			zap.Uint32("nonce", observation.Nonce),
+			zap.Uint64("sequence", observation.Sequence),
+			zap.Stringer("emitter_chain", observation.EmitterChain),
+			zap.Stringer("emitter_address", observation.EmitterAddress),
+			zap.Binary("payload", observation.Payload),
+			zap.Uint8("consistency_level", observation.ConsistencyLevel),
+		)
+
+		e.msgChan <- observation
 	}
 }
 
@@ -170,7 +166,7 @@ func (e *Watcher) Run(ctx context.Context) error {
 
 		indexerClient, err := indexer.MakeClient(e.indexerRPC, e.indexerToken)
 		if err != nil {
-			logger.Info(err.Error())
+			logger.Error("indexer make client", zap.Error(err))
 			p2p.DefaultRegistry.AddErrorCount(vaa.ChainIDAlgorand, 1)
 			errC <- err
 			return
@@ -183,12 +179,13 @@ func (e *Watcher) Run(ctx context.Context) error {
 			// What is the latest round...
 			result, err := indexerClient.SearchForTransactions().Limit(0).Do(context.Background())
 			if err != nil {
-				logger.Info(err.Error())
+				logger.Error("SearchForTransaction", zap.Error(err))
 				p2p.DefaultRegistry.AddErrorCount(vaa.ChainIDAlgorand, 1)
 				errC <- err
 				return
 			}
 			e.next_round = result.CurrentRound + 1
+			logger.Info(fmt.Sprintf("Algorand next_round set to %d", e.next_round))
 		}
 
 		for {
@@ -200,11 +197,13 @@ func (e *Watcher) Run(ctx context.Context) error {
 					panic("invalid chain ID")
 				}
 
-				logger.Info("Received obsv request: " + hex.EncodeToString(r.TxHash) + " -> " + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(r.TxHash))
+				logger.Info("Received obsv request",
+					zap.String("tx_hash", hex.EncodeToString(r.TxHash)),
+					zap.String("base32_tx_hash", base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(r.TxHash)))
 
 				result, err := indexerClient.SearchForTransactions().TXID(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(r.TxHash)).Do(context.Background())
 				if err != nil {
-					logger.Info(err.Error())
+					logger.Error("SearchForTransactions", zap.Error(err))
 					p2p.DefaultRegistry.AddErrorCount(vaa.ChainIDAlgorand, 1)
 					errC <- err
 					return
@@ -216,10 +215,10 @@ func (e *Watcher) Run(ctx context.Context) error {
 
 			case <-timer.C:
 				var nextToken = ""
-				for true {
+				for {
 					result, err := indexerClient.SearchForTransactions().NotePrefix([]byte(notePrefix)).MinRound(e.next_round).NextToken(nextToken).Do(context.Background())
 					if err != nil {
-						logger.Info(err.Error())
+						logger.Error("SearchForTransaction", zap.Error(err))
 						p2p.DefaultRegistry.AddErrorCount(vaa.ChainIDAlgorand, 1)
 						errC <- err
 						return
